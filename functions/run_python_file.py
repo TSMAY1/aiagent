@@ -20,9 +20,9 @@ def run_python_file(working_directory, file_path):
 
         output = []
         if result.stdout:
-            output.append(f"STDOUT:\n{result.stdout}")
+            output.append(f"STDOUT:{result.stdout}")
         if result.stderr:
-            output.append(f"STDERR:\n{result.stderr}") 
+            output.append(f"STDERR:{result.stderr}") 
 
         if result.returncode != 0:
             output.append(f"Process exited with code {result.returncode}")
