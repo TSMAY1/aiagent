@@ -4,175 +4,96 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from functions import get_files_info, get_file_content, run_python_file, write_file
+from prompts import system_prompt
+from call_function import call_function, available_functions
+from config import MAX_ITERS
 
-load_dotenv()
-api_key = os.environ.get("GEMINI_API_KEY")
 
-client = genai.Client(api_key=api_key)
+def main():
+    load_dotenv()
 
-if len(sys.argv) == 1:
-    print("Usage: python main.py <prompt>")
-    sys.exit(1)
-else:
-    user_prompt = sys.argv[1]
+    verbose = "--verbose" in sys.argv
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
 
-messages = [
-    types.Content(role="user", parts=[types.Part(text=user_prompt)]),
-]
+    if not args:
+        print("AI Code Assistant")
+        print('\nUsage: python3 main.py "your prompt here" [--verbose]')
+        print('Example: python3 main.py "How do I fix the calculator?"')
+        sys.exit(1)
 
-schema_get_files_info = types.FunctionDeclaration(
-    name="get_files_info",
-    description="Lists files in the specified directory along with their sizes, constrained to the working directory.",
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "directory": types.Schema(
-                type=types.Type.STRING,
-                description="The directory to list files from, relative to the working directory. If not provided, lists files in the working directory itself.",
-            ),
-        },
-    ),
-)
 
-schema_get_file_content = types.FunctionDeclaration(
-    name="get_file_content",
-    description="Reads the content of a file, constrained to the working directory.",
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "file_path": types.Schema(
-                type=types.Type.STRING,
-                description="The path to the file to read, relative to the working directory.",
-            ),
-        },
-    ),
-)
+    api_key = os.environ.get("GEMINI_API_KEY")
+    client = genai.Client(api_key=api_key)
 
-schema_run_python_file = types.FunctionDeclaration(
-    name="run_python_file",
-    description="Executes a Python file with optional arguments, constrained to the working directory.",
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "file_path": types.Schema(
-                type=types.Type.STRING,
-                description="The path to the Python file to execute, relative to the working directory.",
-            ),
-            "args": types.Schema(
-                type=types.Type.ARRAY,
-                items=types.Schema(type=types.Type.STRING),
-                description="Optional arguments to pass to the Python file.",
-            ),
-        },
-    ),
-)
-
-schema_write_file = types.FunctionDeclaration(
-    name="write_file",
-    description="Writes or overwrites a file with the provided content, constrained to the working directory.",
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "file_path": types.Schema(
-                type=types.Type.STRING,
-                description="The path to the file to write, relative to the working directory.",
-            ),
-            "content": types.Schema(
-                type=types.Type.STRING,
-                description="The content to write to the file.",
-            ),
-        },
-    ),
-)
-
-available_functions = types.Tool(
-    function_declarations=[
-        schema_get_files_info, schema_get_file_content, schema_run_python_file, schema_write_file,
-    ]
-)
-
-system_prompt = """
-You are a helpful AI coding agent.
-
-When a user asks a question or makes a request, make a function call plan. You can perform the following operations:
-
-- List files and directories
-- Read file contents
-- Execute Python files with optional arguments
-- Write or overwrite files
-
-All paths you provide should be relative to the working directory. You do not need to specify the working directory in your function calls as it is automatically injected for security reasons.
-"""
-response = client.models.generate_content(
-    model="gemini-2.0-flash-001", 
-    contents=messages, 
-    config=types.GenerateContentConfig(
-    tools=[available_functions], system_instruction=system_prompt),
-    )
-
-prompt_token_count = response.usage_metadata.prompt_token_count
-candidates_token_count = response.usage_metadata.candidates_token_count
-verbose = sys.argv[-1] == "--verbose"
-
-if verbose:
-    print(f"User prompt: {user_prompt}")
-    print(f"Prompt tokens: {prompt_token_count}")
-    print(f"Response tokens: {candidates_token_count}")
-
-def call_function(function_call_part, verbose=False):
+    user_prompt = " ".join(args)
 
     if verbose:
-        print(f"Calling function: {function_call_part.name}({function_call_part.args})")
-    
-    if not verbose:
-        print(f" - Calling function: {function_call_part.name}")
+        print(f"User prompt: {user_prompt}")
+
+    messages = [types.Content(role="user", parts=[types.Part(text=user_prompt)]),]
+
+    iters = 0
+    while True:
+        iters += 1
+        if iters > MAX_ITERS:
+            print(f"Maximum iterations ({MAX_ITERS}) reached.")
+            sys.exit(1)
+        
+        try:
+            final_response = generate_content(client, messages, verbose)
+            if final_response:
+                print("Final response:")
+                print(final_response)
+                break
+        except Exception as e:
+            print(f"Error in generate_content: {e}")
+
+    generate_content(client, messages, verbose)
 
 
-    function_name = {
-        "get_files_info": get_files_info,
-        "get_file_content": get_file_content,
-        "run_python_file": run_python_file,
-        "write_file": write_file,
-    }
+def generate_content(client, messages, verbose):
+    response = client.models.generate_content(
+        model="gemini-2.0-flash-001", 
+        contents=messages, 
+        config=types.GenerateContentConfig(
+            tools=[available_functions], system_instruction=system_prompt),
+    )
 
-    args = function_call_part.args
-    args["working_directory"] = "./calculator"
+    if verbose:
+        print("Prompt tokens:", response.usage_metadata.prompt_token_count)
+        print("Response tokens:", response.usage_metadata.candidates_token_count)
 
-    
-    if function_call_part.name in function_name:
-        function_result = function_name[function_call_part.name](**args)
+    if response.candidates:
+        for candidate in response.candidates:
+            function_call_content = candidate.content
+            messages.append(function_call_content)
 
-    else:
-        return types.Content(
-    role="tool",
-    parts=[
-        types.Part.from_function_response(
-            name=function_call_part.name,
-            response={"error": f"Unknown function: {function_call_part.name}"},
-        )
-    ],
-)
-    
-    return types.Content(
-        role="tool",
-        parts=[
-            types.Part.from_function_response(
-                name=function_call_part.name,
-                response={"result": function_result},
-        )
-    ],
-)
+    if not response.function_calls:
+        return response.text
 
-
-if response.function_calls:
+    function_responses = []
     for function_call_part in response.function_calls:
         function_call_result = call_function(function_call_part, verbose)
 
-        if function_call_result.parts[0].function_response.response != None:
-            if verbose:
-                print(f"-> {function_call_result.parts[0].function_response.response}")
-        else:
-            raise Exception(f"Function {function_call_part.name} did not return a response.")
+        if (
+            not function_call_result.parts
+            or not function_call_result.parts[0].function_response
+        ):
+            raise Exception("empty function call result")
+        if verbose:
+            print(f"-> {function_call_result.parts[0].function_response.response}")
+        function_responses.append(function_call_result.parts[0])
+
+    if not function_responses:
+        raise Exception("no function responses generated, exiting.")
+    
+    messages.append(types.Content(role="tool", parts=function_responses))
+    
+if __name__ == "__main__":
+    main()
         
-else:
-    print(response.text)
+
+
+
+
+
